@@ -1,10 +1,21 @@
 // statsServer.js
 // Simple Express server to fetch Go game stats from OGS for a given username
 
+
 const express = require('express');
 const axios = require('axios');
+const cors = require('cors');
 const app = express();
 const PORT = 3001;
+
+// Allow CORS for local dev and GitHub Pages
+app.use(cors({
+  origin: [
+    'http://localhost:8000', // or your local server port
+    'http://127.0.0.1:8000',
+    'https://badukalpha.github.io'
+  ]
+}));
 
 app.get('/api/stats', async (req, res) => {
   const username = req.query.username;
