@@ -11,9 +11,10 @@ const PORT = 3001;
 // Allow CORS for local dev and GitHub Pages
 app.use(cors({
   origin: [
-    'http://localhost:8000', // or your local server port
+    'http://localhost:8000',
     'http://127.0.0.1:8000',
-    'https://badukalpha.github.io'
+    'https://badukalpha.github.io',
+    'https://planetgo-flame.vercel.app'
   ]
 }));
 
