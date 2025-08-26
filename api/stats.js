@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 module.exports = async (req, res) => {
-
+  // Fixed CORS headers for Vercel deployment
   // --- CORS HEADERS ---
   const allowedOrigins = [
     'https://planetgo-flame.vercel.app',
