@@ -31,41 +31,108 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const { username } = req.query;
-  if (!username) {
-    res.status(400).json({ error: 'Username parameter is required' });
+  const { username, playerId, pageSize, maxGames, ordering } = req.query;
+  
+  // Must have either username or playerId
+  if (!username && !playerId) {
+    res.status(400).json({ error: 'Username or playerId parameter is required' });
     return;
   }
 
   try {
-    console.log(`Fetching stats for username: ${username}`);
-    
-    // First, get user info
-    const userResp = await axios.get(`https://online-go.com/api/v1/players?username=${encodeURIComponent(username)}`, {
-      timeout: 10000,
-      headers: {
-        'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+    let userId = playerId;
+    let playerData = null;
+
+    // If we have a username, look up the player first
+    if (username && !playerId) {
+      console.log(`Fetching player info for username: ${username}`);
+      
+      const userResp = await axios.get(`https://online-go.com/api/v1/players?username=${encodeURIComponent(username)}`, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+        }
+      });
+      
+      if (!userResp.data.results || userResp.data.results.length === 0) {
+        res.status(404).json({ error: 'User not found on OGS' });
+        return;
       }
-    });
-    
-    if (!userResp.data.results || userResp.data.results.length === 0) {
-      res.status(404).json({ error: 'User not found on OGS' });
-      return;
+      
+      // Find exact match if possible, otherwise return all results for frontend to handle
+      const exactMatch = userResp.data.results.find(p => 
+        p.username.toLowerCase() === username.toLowerCase()
+      );
+      
+      if (exactMatch) {
+        userId = exactMatch.id;
+        playerData = exactMatch;
+      } else {
+        // Return multiple players for frontend to handle selection
+        res.json({
+          multiple_players: true,
+          players: userResp.data.results
+        });
+        return;
+      }
+    } else if (playerId) {
+      // Get player info by ID
+      console.log(`Fetching player info for ID: ${playerId}`);
+      
+      const playerResp = await axios.get(`https://online-go.com/api/v1/players/${playerId}/`, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+        }
+      });
+      
+      playerData = playerResp.data;
+      userId = playerId;
     }
-    
-    const userId = userResp.data.results[0].id;
+
     console.log(`Found user ID: ${userId}`);
     
-    // Then get their games
-    const gamesResp = await axios.get(`https://online-go.com/api/v1/players/${userId}/games/`, {
+    // Build games API URL with parameters
+    const gamesParams = new URLSearchParams();
+    
+    // Set page size (default 20, max 100 to prevent abuse)
+    const pageSizeNum = Math.min(parseInt(pageSize) || 20, 100);
+    gamesParams.append('page_size', pageSizeNum.toString());
+    
+    // Set ordering (default to most recent first)
+    const orderBy = ordering || '-ended';
+    gamesParams.append('ordering', orderBy);
+    
+    const gamesUrl = `https://online-go.com/api/v1/players/${userId}/games/?${gamesParams.toString()}`;
+    console.log(`Fetching games from: ${gamesUrl}`);
+    
+    // Fetch games
+    const gamesResp = await axios.get(gamesUrl, {
       timeout: 15000,
       headers: {
         'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
       }
     });
     
-    console.log(`Successfully fetched ${gamesResp.data.results?.length || 0} games`);
-    res.json(gamesResp.data);
+    const gamesData = gamesResp.data;
+    
+    // If maxGames is specified and less than what we got, limit the results
+    if (maxGames) {
+      const maxGamesNum = parseInt(maxGames);
+      if (maxGamesNum > 0 && gamesData.results && gamesData.results.length > maxGamesNum) {
+        gamesData.results = gamesData.results.slice(0, maxGamesNum);
+        gamesData.count = Math.min(gamesData.count || 0, maxGamesNum);
+      }
+    }
+    
+    console.log(`Successfully fetched ${gamesData.results?.length || 0} games`);
+    
+    // Return combined player and games data
+    res.json({
+      player: playerData,
+      games: gamesData,
+      success: true
+    });
     
   } catch (err) {
     console.error('Error fetching stats:', err.message);
@@ -73,8 +140,10 @@ module.exports = async (req, res) => {
     if (err.code === 'ECONNABORTED') {
       res.status(408).json({ error: 'Request timeout - OGS API is slow' });
     } else if (err.response) {
+      console.error('OGS API response error:', err.response.status, err.response.data);
       res.status(err.response.status).json({ 
-        error: `OGS API error: ${err.response.status}` 
+        error: `OGS API error: ${err.response.status}`,
+        details: err.response.data 
       });
     } else {
       res.status(500).json({ error: 'Failed to fetch stats from OGS' });
