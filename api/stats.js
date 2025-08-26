@@ -76,15 +76,24 @@ module.exports = async (req, res) => {
       // Get player info by ID
       console.log(`Fetching player info for ID: ${playerId}`);
       
-      const playerResp = await axios.get(`https://online-go.com/api/v1/players/${playerId}/`, {
-        timeout: 10000,
-        headers: {
-          'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+      try {
+        const playerResp = await axios.get(`https://online-go.com/api/v1/players/${playerId}/`, {
+          timeout: 10000,
+          headers: {
+            'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+          }
+        });
+        
+        playerData = playerResp.data;
+        userId = playerId;
+        console.log(`Found player: ${playerData.username} (ID: ${userId})`);
+      } catch (err) {
+        if (err.response && err.response.status === 404) {
+          res.status(404).json({ error: 'Player not found with that ID' });
+          return;
         }
-      });
-      
-      playerData = playerResp.data;
-      userId = playerId;
+        throw err; // Re-throw other errors to be handled by main catch
+      }
     }
 
     console.log(`Found user ID: ${userId}`);
@@ -133,15 +142,24 @@ module.exports = async (req, res) => {
     
   } catch (err) {
     console.error('Error fetching stats:', err.message);
+    console.error('Error details:', err.response?.data || 'No response data');
     
     if (err.code === 'ECONNABORTED') {
       res.status(408).json({ error: 'Request timeout - OGS API is slow' });
     } else if (err.response) {
       console.error('OGS API response error:', err.response.status, err.response.data);
-      res.status(err.response.status).json({ 
-        error: `OGS API error: ${err.response.status}`,
-        details: err.response.data 
-      });
+      
+      // Handle specific OGS API errors
+      if (err.response.status === 404) {
+        res.status(404).json({ 
+          error: playerId ? 'Player not found with that ID' : 'Username not found on OGS'
+        });
+      } else {
+        res.status(err.response.status).json({ 
+          error: `OGS API error: ${err.response.status}`,
+          details: err.response.data 
+        });
+      }
     } else {
       res.status(500).json({ error: 'Failed to fetch stats from OGS' });
     }
