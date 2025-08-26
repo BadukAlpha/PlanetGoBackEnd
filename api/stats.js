@@ -209,13 +209,17 @@ module.exports = async (req, res) => {
     
     console.log(`Successfully fetched ${gamesData.results?.length || 0} games`);
     
-    // Return combined player and games data
+    // Calculate comprehensive statistics (gotstats-style)
+    const statistics = calculateComprehensiveStats(playerData, gamesData.results || []);
+    
+    // Return combined player, games, and calculated statistics
     res.json({
       player: playerData,
       games: gamesData,
+      statistics: statistics,
       success: true
     });
-    
+
   } catch (err) {
     console.error('Error fetching stats:', err.message);
     console.error('Error details:', err.response?.data || 'No response data');
@@ -241,3 +245,199 @@ module.exports = async (req, res) => {
     }
   }
 };
+
+// Calculate comprehensive statistics (gotstats-style)
+function calculateComprehensiveStats(player, games) {
+  if (!games || games.length === 0) {
+    return {
+      total: 0,
+      wins: 0,
+      losses: 0,
+      winRate: 0,
+      black: { games: 0, wins: 0, winRate: 0 },
+      white: { games: 0, wins: 0, winRate: 0 },
+      ranked: { games: 0, wins: 0, winRate: 0 },
+      unranked: { games: 0, wins: 0, winRate: 0 },
+      boardSizes: {},
+      timeControls: {},
+      opponents: { stronger: 0, equal: 0, weaker: 0 },
+      outcomes: {
+        resignation: { won: 0, lost: 0 },
+        timeout: { won: 0, lost: 0 },
+        score: { won: 0, lost: 0 },
+        disconnection: { won: 0, lost: 0 }
+      },
+      rankProgression: []
+    };
+  }
+
+  const stats = {
+    total: games.length,
+    wins: 0,
+    losses: 0,
+    black: { games: 0, wins: 0 },
+    white: { games: 0, wins: 0 },
+    ranked: { games: 0, wins: 0 },
+    unranked: { games: 0, wins: 0 },
+    boardSizes: {},
+    timeControls: {},
+    opponents: { stronger: 0, equal: 0, weaker: 0 },
+    outcomes: {
+      resignation: { won: 0, lost: 0 },
+      timeout: { won: 0, lost: 0 },
+      score: { won: 0, lost: 0 },
+      disconnection: { won: 0, lost: 0 }
+    },
+    rankProgression: []
+  };
+
+  // Process games in chronological order for rank progression
+  const sortedGames = [...games].sort((a, b) => 
+    new Date(a.ended || a.started) - new Date(b.ended || b.started)
+  );
+
+  sortedGames.forEach((game, index) => {
+    // Determine if player is black or white using the actual OGS data structure
+    const isBlack = game.black === player.id || 
+                   (game.players && game.players.black && game.players.black.id === player.id) ||
+                   (game.black_player && game.black_player.id === player.id);
+    
+    // Determine if player won using OGS game result structure
+    let isWin = false;
+    let outcomeType = 'unknown';
+    
+    if (game.outcome) {
+      // Parse outcome string (e.g., "B+R", "W+T", "B+0.5", etc.)
+      if (isBlack) {
+        isWin = game.outcome.includes('B+');
+      } else {
+        isWin = game.outcome.includes('W+');
+      }
+      
+      // Determine outcome type
+      if (game.outcome.includes('+R')) {
+        outcomeType = 'resignation';
+      } else if (game.outcome.includes('+T')) {
+        outcomeType = 'timeout';
+      } else if (game.outcome.includes('+F')) {
+        outcomeType = 'disconnection';
+      } else if (game.outcome.match(/\+\d/)) {
+        outcomeType = 'score';
+      }
+    } else if (typeof game.black_lost !== 'undefined') {
+      isWin = isBlack ? !game.black_lost : game.black_lost;
+    } else if (typeof game.white_lost !== 'undefined') {
+      isWin = isBlack ? game.white_lost : !game.white_lost;
+    }
+
+    if (isWin) {
+      stats.wins++;
+      if (stats.outcomes[outcomeType]) {
+        stats.outcomes[outcomeType].won++;
+      }
+    } else {
+      stats.losses++;
+      if (stats.outcomes[outcomeType]) {
+        stats.outcomes[outcomeType].lost++;
+      }
+    }
+
+    // Color stats
+    if (isBlack) {
+      stats.black.games++;
+      if (isWin) stats.black.wins++;
+    } else {
+      stats.white.games++;
+      if (isWin) stats.white.wins++;
+    }
+
+    // Ranked vs Unranked
+    if (game.ranked) {
+      stats.ranked.games++;
+      if (isWin) stats.ranked.wins++;
+    } else {
+      stats.unranked.games++;
+      if (isWin) stats.unranked.wins++;
+    }
+
+    // Board sizes
+    const size = `${game.width || 19}×${game.height || 19}`;
+    if (!stats.boardSizes[size]) {
+      stats.boardSizes[size] = { games: 0, wins: 0 };
+    }
+    stats.boardSizes[size].games++;
+    if (isWin) stats.boardSizes[size].wins++;
+
+    // Time controls
+    let timeControl = 'Unknown';
+    if (game.time_control) {
+      if (typeof game.time_control === 'string') {
+        timeControl = game.time_control;
+      } else if (game.time_control.system) {
+        timeControl = game.time_control.system;
+      }
+    }
+    if (!stats.timeControls[timeControl]) {
+      stats.timeControls[timeControl] = { games: 0, wins: 0 };
+    }
+    stats.timeControls[timeControl].games++;
+    if (isWin) stats.timeControls[timeControl].wins++;
+
+    // Opponent strength analysis
+    let opponent = null;
+    if (game.players) {
+      opponent = isBlack ? game.players.white : game.players.black;
+    } else if (game.black_player && game.white_player) {
+      opponent = isBlack ? game.white_player : game.black_player;
+    }
+
+    if (opponent && opponent.rating && player.rating) {
+      const playerRating = player.rating;
+      const opponentRating = opponent.rating;
+      const ratingDiff = opponentRating - playerRating;
+      
+      if (ratingDiff > 100) {
+        stats.opponents.stronger++;
+      } else if (Math.abs(ratingDiff) <= 100) {
+        stats.opponents.equal++;
+      } else {
+        stats.opponents.weaker++;
+      }
+    }
+
+    // Rank progression (simplified - would need historical rating data for full implementation)
+    if (game.historical_ratings && (index % 10 === 0)) {
+      const playerRating = isBlack ? 
+        game.historical_ratings.black?.rating : 
+        game.historical_ratings.white?.rating;
+      if (playerRating) {
+        stats.rankProgression.push({
+          game: index + 1,
+          rating: playerRating,
+          date: game.ended || game.started
+        });
+      }
+    }
+  });
+
+  // Calculate win rates
+  stats.winRate = stats.total > 0 ? (stats.wins / stats.total) * 100 : 0;
+  stats.black.winRate = stats.black.games > 0 ? (stats.black.wins / stats.black.games) * 100 : 0;
+  stats.white.winRate = stats.white.games > 0 ? (stats.white.wins / stats.white.games) * 100 : 0;
+  stats.ranked.winRate = stats.ranked.games > 0 ? (stats.ranked.wins / stats.ranked.games) * 100 : 0;
+  stats.unranked.winRate = stats.unranked.games > 0 ? (stats.unranked.wins / stats.unranked.games) * 100 : 0;
+
+  // Calculate board size win rates
+  Object.keys(stats.boardSizes).forEach(size => {
+    const data = stats.boardSizes[size];
+    data.winRate = data.games > 0 ? (data.wins / data.games) * 100 : 0;
+  });
+
+  // Calculate time control win rates
+  Object.keys(stats.timeControls).forEach(control => {
+    const data = stats.timeControls[control];
+    data.winRate = data.games > 0 ? (data.wins / data.games) * 100 : 0;
+  });
+
+  return stats;
+}
