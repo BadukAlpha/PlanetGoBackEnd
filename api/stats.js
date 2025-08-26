@@ -39,8 +39,11 @@ module.exports = async (req, res) => {
   const ordering = req.query.ordering;
   
   // Debug logging
-  console.log('Received parameters:', { username, playerId, pageSize, maxGames, ordering });
   console.log('Raw query object:', req.query);
+  console.log('Received parameters:', { username, playerId, pageSize, maxGames, ordering });
+  console.log('typeof playerId:', typeof playerId);
+  console.log('playerId value:', playerId);
+  console.log('!!playerId:', !!playerId);
   
   // Must have either username or playerId
   if (!username && !playerId) {
