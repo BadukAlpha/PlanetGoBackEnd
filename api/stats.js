@@ -1,26 +1,25 @@
 const axios = require('axios');
 
 module.exports = async (req, res) => {
-  // Enable CORS for your specific domains
+
+  // --- CORS HEADERS ---
   const allowedOrigins = [
     'https://planetgo-flame.vercel.app',
     'https://badukalpha.github.io',
     'http://localhost:3000',
     'http://127.0.0.1:5500'
   ];
-  
   const origin = req.headers.origin;
   if (allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
   } else {
     res.setHeader('Access-Control-Allow-Origin', '*');
   }
-  
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Max-Age', '86400');
 
-  // Handle preflight requests
+  // Handle preflight OPTIONS request immediately
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
