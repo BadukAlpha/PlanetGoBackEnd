@@ -112,38 +112,100 @@ module.exports = async (req, res) => {
 
     console.log(`Found user ID: ${userId}`);
     
-    // Build games API URL with parameters
-    const gamesParams = new URLSearchParams();
-    
-    // Set page size (default 20, max 100 to prevent abuse)
-    const pageSizeNum = Math.min(parseInt(pageSize) || 20, 100);
-    gamesParams.append('page_size', pageSizeNum.toString());
-    
-    // Set ordering (default to most recent first)
+    // Parse pagination parameters with safeguards
+    const requestedMaxGames = Math.min(parseInt(maxGames) || 20, 10000); // Cap at 10,000 games
+    const requestedPageSize = parseInt(pageSize) || Math.min(requestedMaxGames, 100);
     const orderBy = ordering || '-ended';
-    gamesParams.append('ordering', orderBy);
     
-    const gamesUrl = `https://online-go.com/api/v1/players/${userId}/games/?${gamesParams.toString()}`;
-    console.log(`Fetching games from: ${gamesUrl}`);
+    console.log(`Requested maxGames: ${requestedMaxGames}, pageSize: ${requestedPageSize}`);
     
-    // Fetch games
-    const gamesResp = await axios.get(gamesUrl, {
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+    // Add timeout protection for large requests
+    const startTime = Date.now();
+    const maxExecutionTime = 25000; // 25 seconds (Vercel has 30s limit)
+    
+    // Fetch games with pagination support
+    let allGames = [];
+    let page = 1;
+    let hasMore = true;
+    let totalFetched = 0;
+    const maxPages = Math.ceil(requestedMaxGames / 100); // Theoretical max pages needed
+    
+    console.log(`Starting pagination fetch, max pages: ${maxPages}`);
+    
+    while (hasMore && totalFetched < requestedMaxGames && page <= maxPages) {
+      // Check if we're approaching timeout
+      const elapsed = Date.now() - startTime;
+      if (elapsed > maxExecutionTime) {
+        console.log(`Timeout protection: stopping after ${elapsed}ms, fetched ${totalFetched} games`);
+        break;
       }
-    });
-    
-    const gamesData = gamesResp.data;
-    
-    // If maxGames is specified and less than what we got, limit the results
-    if (maxGames) {
-      const maxGamesNum = parseInt(maxGames);
-      if (maxGamesNum > 0 && gamesData.results && gamesData.results.length > maxGamesNum) {
-        gamesData.results = gamesData.results.slice(0, maxGamesNum);
-        gamesData.count = Math.min(gamesData.count || 0, maxGamesNum);
+      
+      const gamesParams = new URLSearchParams();
+      
+      // Calculate page size for this request
+      const remainingGames = requestedMaxGames - totalFetched;
+      const currentPageSize = Math.min(remainingGames, 100); // OGS API limit is 100 per request
+      
+      gamesParams.append('page_size', currentPageSize.toString());
+      gamesParams.append('page', page.toString());
+      gamesParams.append('ordering', orderBy);
+      
+      const gamesUrl = `https://online-go.com/api/v1/players/${userId}/games/?${gamesParams.toString()}`;
+      console.log(`Fetching page ${page}/${maxPages} (${currentPageSize} games)`);
+      
+      try {
+        const gamesResp = await axios.get(gamesUrl, {
+          timeout: 8000, // Shorter timeout per request
+          headers: {
+            'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+          }
+        });
+        
+        const gamesData = gamesResp.data;
+        
+        if (gamesData.results && gamesData.results.length > 0) {
+          allGames = allGames.concat(gamesData.results);
+          totalFetched += gamesData.results.length;
+          
+          console.log(`Page ${page}: +${gamesData.results.length} games (total: ${totalFetched}/${requestedMaxGames})`);
+          
+          // Check if there are more pages
+          hasMore = gamesData.next !== null && totalFetched < requestedMaxGames;
+          page++;
+          
+          // Add a small delay between requests to be respectful to OGS API
+          if (hasMore && page <= maxPages) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+        } else {
+          console.log(`Page ${page}: No more games found`);
+          hasMore = false;
+        }
+      } catch (err) {
+        console.error(`Error fetching page ${page}:`, err.message);
+        // Don't stop on individual page errors, try to continue
+        if (err.code === 'ECONNABORTED' || err.response?.status >= 500) {
+          console.log(`Retrying page ${page} after error...`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue; // Retry this page
+        } else {
+          hasMore = false; // Stop on client errors
+        }
       }
     }
+    
+    const executionTime = Date.now() - startTime;
+    console.log(`Pagination complete: ${allGames.length} games fetched in ${executionTime}ms`);
+    
+    // Create response in the expected format
+    const gamesData = {
+      count: allGames.length,
+      results: allGames,
+      next: null,
+      previous: null,
+      executionTime: executionTime,
+      pagesProcessed: page - 1
+    };
     
     console.log(`Successfully fetched ${gamesData.results?.length || 0} games`);
     
