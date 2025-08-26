@@ -47,20 +47,94 @@ module.exports = async (req, res) => {
     if (username && !playerId) {
       console.log(`Fetching player info for username: ${username}`);
       
-      const userResp = await axios.get(`https://online-go.com/api/v1/players?username=${encodeURIComponent(username)}`, {
-        timeout: 10000,
-        headers: {
-          'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
-        }
-      });
+      // Try different search strategies for partial matches
+      const searchQueries = [
+        username, // Exact search first
+        username.toLowerCase(), // Lowercase
+        username.substring(0, Math.max(3, username.length - 2)), // Partial from start
+        username.substring(0, Math.max(2, username.length - 3)) // Even shorter partial
+      ];
       
-      if (!userResp.data.results || userResp.data.results.length === 0) {
-        res.status(404).json({ error: 'User not found on OGS' });
+      let allResults = [];
+      const seenUsernames = new Set();
+      
+      // Try multiple search queries to find similar usernames
+      for (const query of searchQueries) {
+        try {
+          const userResp = await axios.get(`https://online-go.com/api/v1/players?username=${encodeURIComponent(query)}`, {
+            timeout: 10000,
+            headers: {
+              'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+            }
+          });
+          
+          if (userResp.data.results && userResp.data.results.length > 0) {
+            // Add unique results
+            userResp.data.results.forEach(player => {
+              if (!seenUsernames.has(player.username.toLowerCase())) {
+                seenUsernames.add(player.username.toLowerCase());
+                allResults.push(player);
+              }
+            });
+          }
+        } catch (err) {
+          console.log(`Search query "${query}" failed, continuing...`);
+          continue;
+        }
+        
+        // If we have enough results, break early
+        if (allResults.length >= 10) break;
+      }
+      
+      // Also try a general search to get more players
+      if (allResults.length < 10) {
+        try {
+          const generalResp = await axios.get(`https://online-go.com/api/v1/players?page_size=50`, {
+            timeout: 10000,
+            headers: {
+              'User-Agent': 'PlanetGo-Stats-Fetcher/1.0'
+            }
+          });
+          
+          if (generalResp.data.results) {
+            // Filter for usernames that contain parts of the search term
+            const searchLower = username.toLowerCase();
+            const filteredResults = generalResp.data.results.filter(player => {
+              const playerNameLower = player.username.toLowerCase();
+              return playerNameLower.includes(searchLower) || 
+                     searchLower.includes(playerNameLower.substring(0, 3)) ||
+                     levenshteinDistance(searchLower, playerNameLower) <= 3;
+            });
+            
+            filteredResults.forEach(player => {
+              if (!seenUsernames.has(player.username.toLowerCase()) && allResults.length < 15) {
+                seenUsernames.add(player.username.toLowerCase());
+                allResults.push(player);
+              }
+            });
+          }
+        } catch (err) {
+          console.log('General search failed, using existing results');
+        }
+      }
+      
+      if (allResults.length === 0) {
+        res.status(404).json({ error: 'No players found matching the search criteria' });
         return;
       }
       
-      // Find exact match if possible, otherwise return all results for frontend to handle
-      const exactMatch = userResp.data.results.find(p => 
+      // Sort results by similarity to search term
+      allResults.sort((a, b) => {
+        const aSimilarity = calculateSimilarity(username.toLowerCase(), a.username.toLowerCase());
+        const bSimilarity = calculateSimilarity(username.toLowerCase(), b.username.toLowerCase());
+        return bSimilarity - aSimilarity;
+      });
+      
+      // Limit to top 10 results
+      allResults = allResults.slice(0, 10);
+      
+      // Check for exact match
+      const exactMatch = allResults.find(p => 
         p.username.toLowerCase() === username.toLowerCase()
       );
       
@@ -71,7 +145,8 @@ module.exports = async (req, res) => {
         // Return multiple players for frontend to handle selection
         res.json({
           multiple_players: true,
-          players: userResp.data.results
+          players: allResults,
+          search_term: username
         });
         return;
       }
@@ -150,3 +225,57 @@ module.exports = async (req, res) => {
     }
   }
 };
+
+// Helper function to calculate Levenshtein distance
+function levenshteinDistance(str1, str2) {
+  const matrix = [];
+  
+  for (let i = 0; i <= str2.length; i++) {
+    matrix[i] = [i];
+  }
+  
+  for (let j = 0; j <= str1.length; j++) {
+    matrix[0][j] = j;
+  }
+  
+  for (let i = 1; i <= str2.length; i++) {
+    for (let j = 1; j <= str1.length; j++) {
+      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          matrix[i][j - 1] + 1,     // insertion
+          matrix[i - 1][j] + 1      // deletion
+        );
+      }
+    }
+  }
+  
+  return matrix[str2.length][str1.length];
+}
+
+// Helper function to calculate similarity score
+function calculateSimilarity(search, target) {
+  const searchLower = search.toLowerCase();
+  const targetLower = target.toLowerCase();
+  
+  // Exact match gets highest score
+  if (searchLower === targetLower) return 100;
+  
+  // Check if target starts with search term
+  if (targetLower.startsWith(searchLower)) return 90;
+  
+  // Check if target contains search term
+  if (targetLower.includes(searchLower)) return 80;
+  
+  // Check if search term contains target (shorter target)
+  if (searchLower.includes(targetLower)) return 70;
+  
+  // Calculate based on Levenshtein distance
+  const distance = levenshteinDistance(searchLower, targetLower);
+  const maxLength = Math.max(searchLower.length, targetLower.length);
+  const similarity = ((maxLength - distance) / maxLength) * 60;
+  
+  return Math.max(0, similarity);
+}
