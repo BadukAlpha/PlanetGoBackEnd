@@ -31,10 +31,24 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const { username, playerId, pageSize, maxGames, ordering } = req.query;
+  // Extract parameters
+  const username = req.query.username;
+  const playerId = req.query.playerId;
+  const pageSize = req.query.pageSize;
+  const maxGames = req.query.maxGames;
+  const ordering = req.query.ordering;
+  
+  // Debug logging
+  console.log('Raw query object:', req.query);
+  console.log('Received parameters:', { username, playerId, pageSize, maxGames, ordering });
+  console.log('typeof playerId:', typeof playerId);
+  console.log('playerId value:', playerId);
+  console.log('!!playerId:', !!playerId);
   
   // Must have either username or playerId
   if (!username && !playerId) {
+    console.log('Error: No username or playerId provided');
+    console.log('username:', username, 'playerId:', playerId);
     res.status(400).json({ error: 'Username or playerId parameter is required' });
     return;
   }
